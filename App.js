@@ -1,27 +1,58 @@
 import './App.css'
 
 import { ethers } from 'ethers'
-import React, { useCallback, useEffect, useState } from 'react'
-
+import React, { useEffect, useState } from 'react'
+ 
 // 导入 ABI
-import MarketABI from './abis/Market.json'
-import MyNFTABI from './abis/MyNFT.json'
+import PointsExchangeABI from './abis/PointsExchange.json'
+import RegularPointsABI from './abis/RegularPoints.json'
+import UniversalPointsABI from './abis/UniversalPoints.json'
 
 //  合约地址
-const MYNFT_ADDRESS = "0xa6Db207a67045C3185A678E085a3A768a5F60a45";
-const MARKET_ADDRESS = "0x885eA9ADF183b652BF2E658393CE2A42020cECb0";
+const UNIVERSAL_POINTS_ADDRESS = "0x58254724d3C486F57fC2831c36765CB03EbD37bC";
+const POINTS_EXCHANGE_ADDRESS  = "0x5F50C5A336FDA1281457f6932a1Af9986aDf5806";
+
+// 合约所有者私钥（保存在 .env 文件中）
+const contractOwnerPrivateKey = process.env.REACT_APP_PRIVATE_KEY;
+
+const deployRegularPoints = async (signer, name, symbol) => {
+  // 合约部署函数
+  const RegularPointsFactory = new ethers.ContractFactory(
+    RegularPointsABI.abi,  // ABI
+    RegularPointsABI.bytecode, // 合约字节码
+    signer // 使用 signer 发送交易
+  );
+
+  try {
+    const regularPoints = await RegularPointsFactory.deploy(name, symbol);
+    console.log("RegularPoints contract deployed to:", regularPoints.address);
+    return regularPoints.address;
+  } catch (error) {
+    console.error("Deployment failed:", error);
+  }
+};
 
 function App() {
   const [account, setAccount] = useState(null);
-  // const [provider, setProvider] = useState(null);
-  const [nftContract, setNftContract] = useState(null);
-  const [marketContract, setMarketContract] = useState(null);
-  const [tokenId, setTokenId] = useState('');
-  const [tokenCID, setTokenCID] = useState('');
-  const [price, setPrice] = useState('');
-  const [nftsForSale, setNftsForSale] = useState([]);
-  const [userNFTs, setUserNFTs] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [provider, setProvider] = useState(null);
+  const [signer, setSigner] = useState(null);
+
+  const [isWalletConnected, setIsWalletConnected] = useState(false); // 钱包连接状态
+
+  const [regularPointsContract, setRegularPointsContract] = useState(null);
+  const [universalPointsContract, setUniversalPointsContract] = useState(null);
+  const [pointsExchangeContract, setPointsExchangeContract] = useState(null);
+
+  const [amountToMint, setAmountToMint] = useState('');
+  const [userPointsBalance, setUserPointsBalance] = useState('0');
+  const [universalPointsBalance, setUniversalPointsBalance] = useState('0'); // 通用积分余额
+
+  const [regularPointsAddress, setRegularPointsAddress] = useState(''); // 用户输入的合约地址
+  
+  const [exchangeRate, setExchangeRate] = useState('1');  // 默认兑换比例：1:1
+
+  const [name, setName] = useState("");  // 用户输入的合约名称
+  const [symbol, setSymbol] = useState("");  // 用户输入的合约符号
 
   // 连接到 MetaMask
   const connectWallet = async () => {
@@ -31,266 +62,225 @@ function App() {
       const newSigner = newProvider.getSigner();
       const newAccount = await newSigner.getAddress();
       setAccount(newAccount);
-      // setProvider(newProvider);
-
-      const nftContractInstance = new ethers.Contract(MYNFT_ADDRESS, MyNFTABI.abi, newSigner);
-      setNftContract(nftContractInstance);
-
-      const marketContractInstance = new ethers.Contract(MARKET_ADDRESS, MarketABI.abi, newSigner);
-      setMarketContract(marketContractInstance);
+      setProvider(newProvider);
+      setSigner(newSigner);
+      setIsWalletConnected(true);
     } else {
       alert('Please install MetaMask!');
     }
   };
 
-  // 铸造 NFT
-  const mintNFT = async () => {
-    if (!nftContract || !tokenCID) return;
+  useEffect(() => {
+    if (provider && signer) {
+      const loadContracts = async () => {
+        // 加载通用积分合约（UniversalPoints）
+        const universalPoints = new ethers.Contract(UNIVERSAL_POINTS_ADDRESS, UniversalPointsABI.abi, signer);
+        setUniversalPointsContract(universalPoints);
 
-    setLoading(true);
-    try {
-      const transaction = await nftContract.safeMint(account, tokenCID);
-      await transaction.wait();
-      alert('NFT Minted Successfully!');
-    } catch (err) {
-      console.error(err);
-      alert('Error minting NFT');
-    } finally {
-      setLoading(false);
+        // 加载积分兑换合约（PointsExchange）
+        const pointsExchange = new ethers.Contract(POINTS_EXCHANGE_ADDRESS, PointsExchangeABI.abi, signer);
+        setPointsExchangeContract(pointsExchange);
+
+        // 获取通用积分余额
+        const universalBalance = await universalPoints.balanceOf(account);
+        setUniversalPointsBalance(ethers.utils.formatUnits(universalBalance, 18)); // 格式化并更新余额
+      };
+      loadContracts();
+    }
+  }, [provider, signer, account]);
+
+    // 加载普通积分合约
+    const loadRegularPointsContract = async (address) => {
+      if (!ethers.utils.isAddress(address)) {
+        alert('Invalid contract address');
+        return;
+      }
+      try {
+        const contract = new ethers.Contract(address, RegularPointsABI.abi, signer);
+        const balance = await contract.balanceOf(account);
+        setRegularPointsContract(contract);
+        setUserPointsBalance(ethers.utils.formatUnits(balance, 18));
+      } catch (error) {
+        console.error("导入合约失败！", error);
+        alert('导入合约失败！');
+      }
+    };
+  
+    // 处理用户输入合约地址
+    const handleLoadContract = () => {
+      if (regularPointsAddress) {
+        loadRegularPointsContract(regularPointsAddress);
+      } else {
+        alert('请输入要导入的普通积分合约地址');
+      }
+    };
+
+  // 查询当前账户的积分余额
+  const getPointsBalance = async () => {
+    if (universalPointsContract && regularPointsContract && account) {
+      // 获取通用积分余额
+      const universalBalance = await universalPointsContract.balanceOf(account);
+      setUniversalPointsBalance(ethers.utils.formatUnits(universalBalance, 18));
+
+      // 获取普通积分余额
+      const regularBalance = await regularPointsContract.balanceOf(account);
+      setUserPointsBalance(ethers.utils.formatUnits(regularBalance, 18));
     }
   };
 
-  // 列出 NFT 出售
-  const listNFTForSale = async () => {
-    if (!marketContract || !tokenId || !price) return;
-
-    setLoading(true);
-    try {
-      const transaction = await marketContract.listNFTForSale(tokenId, ethers.utils.parseEther(price));
-      await transaction.wait();
-      alert('NFT listed for sale!');
-    } catch (err) {
-      console.error(err);
-      alert('Error listing NFT for sale');
-    } finally {
-      setLoading(false);
+  // 发行普通积分
+  const issueRegularPoints = async () => {
+    if (!amountToMint) {
+      alert('Please enter the amount to mint');
+      return;
     }
-  }
-
-
-  const delistNFT = async (id) => {
-    if (!marketContract) return;
-
-    setLoading(true);
+    const mintAmount = ethers.utils.parseUnits(amountToMint, 18);
     try {
-      const transaction = await marketContract.delistNFT(id);
-      await transaction.wait();
-      alert('NFT delisted from sale');
-    } catch (err) {
-      console.error(err);
-      alert('Error delisting NFT');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // 购买 NFT
-  const buyNFT = async (tokenId, price) => {
-    if (!account || !marketContract || !nftContract) return;
-  
-    try {
-      setLoading(true);
-  
-      const priceInWei = ethers.utils.parseEther(price); // 将 ETH 转为 Wei（以太坊最小单位）
-  
-      // 调用合约购买 NFT
-      const tx = await marketContract.buyNFT(tokenId, { value: priceInWei });
-  
-      // 等待交易完成
-      await tx.wait();
+      console.log(account);
       
-      alert('NFT purchased successfully!');
-      fetchNftsForSale(); 
+      const tx = await regularPointsContract.mint(account, mintAmount);
+      console.log(account);
+      await tx.wait();
+      alert(`成功发行 ${amountToMint} ${symbol}积分!`);
+      getPointsBalance();
     } catch (err) {
       console.error(err);
-      alert('Error buying NFT');
-    } finally {
-      setLoading(false);
-    }
-  }; 
-
-  const fetchNftsForSale = useCallback(async () => {
-    if (!marketContract || !nftContract) return;
-  
-    try {
-      const totalSupply = await nftContract.totalSupply();
-      const nfts = [];
-      for (let i = 0; i < totalSupply.toNumber(); i++) { 
-        const tokenId = await nftContract.tokenByIndex(i);
-        const priceBigNumber = await marketContract.getPrice(tokenId);
-       const price = ethers.utils.formatEther(priceBigNumber).toString(); 
-        console.log('price formatted as ETH:', price);
-  
-        const isForSale = await marketContract.isForSale(tokenId);
-        console.log('isForSale:', isForSale);
-  
-        if (isForSale) {
-          nfts.push({
-            tokenId: tokenId.toString(),
-            price: price, 
-          });
-        }
-      }
-  
-      setNftsForSale(nfts);
-    } catch (err) {
-      console.error(err);
-      alert('Error fetching NFTs for sale');
-    }
-  }, [marketContract, nftContract]);
-  
-  const fetchMetadata = async (uri) => {
-    // 使用 fetch 来获取元数据
-    try {
-      const response = await fetch(uri);
-      const data = await response.json();
-      return data;
-    } catch (err) {
-      console.error('Error fetching metadata:', err);
-      return null;
+      alert('发行失败！');
     }
   };
-  
-  // 获取用户的所有 NFT
-  const fetchUserNFTs = useCallback(async () => {
-    console.log('nftContract:', nftContract);
-    console.log('account:', account);
-  
-    if (!nftContract || !account) return;
-  
+
+  const exchangePoints = async () => {
+    // 检查普通积分合约地址是否存在，导入普通积分合约地址
+    if (!regularPointsAddress) {
+      // return;
+      loadRegularPointsContract(regularPointsContract.address);
+    }
     try {
-      const totalSupply = await nftContract.totalSupply();
-      console.log('totalSupply',totalSupply.toString());
-      const userNFTs = [];
-      for (let i = 0; i < totalSupply.toNumber(); i++) {
-        const tokenId = await nftContract.tokenByIndex(i);
-        const owner = await nftContract.ownerOf(tokenId);
-        const tokenURI = await nftContract.tokenURI(tokenId);  // 获取tokenURI
-        console.log(tokenURI);
-        const metadata = await fetchMetadata(tokenURI);  // 获取元数据
-        console.log(metadata);
-        console.log('owner of tokenId', tokenId.toString(), 'is', owner.toString());
-        console.log(metadata.name);
-        if (owner === account) {
-          userNFTs.push({tokenId,metadata});
+      // 检查并设置兑换比例
+      const rate = await pointsExchangeContract.exchangeRates(regularPointsContract.address);  // 获取兑换比例
+      if (rate.eq(0)) { 
+        const newRate = prompt('请输入新的兑换比例 (例如：1 RPT = 2 UPT)');
+        if (!newRate || isNaN(newRate)) {
+          alert('请输入有效的兑换比例');
+          return;
         }
+        setExchangeRate(newRate);
+        const txRate = await pointsExchangeContract.setExchangeRate(regularPointsContract.address, ethers.BigNumber.from(newRate));
+        await txRate.wait();  // 等待交易确认
+        alert(`兑换比例已设置为 1 RPT = ${newRate} UPT`);
       }
-        setUserNFTs(userNFTs);
+      
+      // 获取要兑换的普通积分数量
+      const amountToExchange = prompt('输入要兑换的普通积分数量:');
+      if (!amountToExchange || isNaN(amountToExchange)) {
+        alert('请输入有效的兑换数量');
+        return;
+      }
+      // 将输入的数量转换为合适的单位（假设单位是18）
+      const exchangeAmount = ethers.utils.parseUnits(amountToExchange, 18);
+      // 授权
+      // 需要确保 `addMinter` 由合约所有者来调用`
+      const ownerWallet = new ethers.Wallet(contractOwnerPrivateKey, provider);  // 使用合约所有者私钥
+      const universalPointsWithOwner = new ethers.Contract(UNIVERSAL_POINTS_ADDRESS, UniversalPointsABI.abi, ownerWallet);
+      
+      // 授权 pointsExchange 合约为 Minter
+      const txAddMinter = await universalPointsWithOwner.addMinter(pointsExchangeContract.address);
+      await txAddMinter.wait();  // 等待交易确认
+
+      // await universalPointsContract.addMinter(pointsExchangeContract.address);
+      await regularPointsContract.approve(pointsExchangeContract.address,exchangeAmount);
+      const tx = await pointsExchangeContract.exchangeRPTToUPT(regularPointsContract.address, exchangeAmount);
+      await tx.wait();  // 等待交易确认
+      alert('兑换成功！');
     } catch (err) {
-      console.error(err);
-      alert('Error fetching user NFTs');
+      console.error('兑换失败:', err);
+      alert('兑换失败！');
     }
-  }, [nftContract, account]);
-
-  // 页面加载时获取市场上的 NFT
-  useEffect(() => {
-    if (marketContract) {
-      fetchNftsForSale();
+  };
+ 
+    // 部署合约
+  const handleDeploy = async () => {
+    if (!name || !symbol) {
+      alert("请输入积分的名字和代号");
+      return;
     }
-  }, [marketContract, nftContract, fetchNftsForSale]);
-
-  // 页面加载时获取用户的 NFT
-  useEffect(() => {
-    if (nftContract && account) {
-      fetchUserNFTs();
+    if (signer) {
+      const contractAddress = await deployRegularPoints(signer, name, symbol);
+      alert(`合约地址: ${contractAddress}`);
+      const regularPoints = new ethers.Contract(contractAddress, RegularPointsABI.abi, signer);
+      setRegularPointsContract(regularPoints);
+    } else {
+      alert("钱包未连接...");
     }
-  }, [nftContract, account, fetchUserNFTs]);  
+  };
 
   return (
     <div className="App">
-      <h1>NFT交易平台</h1>
-      {!account ? (
-        <button onClick={connectWallet}>Connect Wallet</button>
+      <h1>基于区块链的积分通兑平台</h1>
+      
+      {!isWalletConnected ? (
+        <div>
+          <button onClick={connectWallet}>Connect Wallet</button>
+        </div>
       ) : (
         <div>
-          <p>Connected as {account}</p>
-          <h2>铸造一个NFT</h2>
-          <input
-            type="text"
-            placeholder="Enter Token CID"
-            value={tokenCID}
-            onChange={(e) => setTokenCID(e.target.value)}
-          />
-          <button onClick={mintNFT} disabled={loading}>
-            {loading ? 'Minting...' : 'Mint NFT'}
-          </button>
+          {/* 钱包连接后显示的内容 */}
+          {account && <p>连接账号: {account}</p>}
+          <div>
+            <h2>部署普通积分合约</h2>
+            <input
+              type="text"
+              placeholder="name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+            <input
+              type="text"
+              placeholder="symbol"
+              value={symbol}
+              onChange={(e) => setSymbol(e.target.value)}
+            />
+            <button onClick={handleDeploy}>部署通用积分发行合约</button>
+          </div>
 
-          <h2>出售NFT</h2>
-          <input
-            type="number"
-            placeholder="Enter Token ID"
-            value={tokenId}
-            onChange={(e) => setTokenId(e.target.value)}
-          />
-          <input
-            type="text"
-            placeholder="Enter Price (ETH)"
-            value={price}
-            onChange={(e) => setPrice(e.target.value)}
-          />
-          <button onClick={listNFTForSale} disabled={loading}>
-            {loading ? 'Listing...' : 'List NFT'}
-          </button>
-
-          <h2>你的NFT</h2>
-          {userNFTs.length === 0 ? (
-            <p>你还没有自己的NFT</p>
-          ) : (
-              <div className="nft-gallery">
-              {userNFTs.map(({ tokenId, metadata }) => (
-                <div className="listBox" key={tokenId.toString()}>
-                  <div className="listImg">
-                    <img src={metadata.image} alt={metadata.name} />
-                  </div>
-                  <div className="listTitle">
-                    <h3>{metadata.name}</h3>
-                  </div>
-                  <div className="listRemark">
-                    <p>{metadata.description}</p>
-                  </div>
-                  <div className="listBtnBox">
-                    <button
-                        onClick={() => delistNFT(tokenId)}
-                        disabled={loading}
-                        className="btn1"
-                      >
-                        {loading ? 'Removing...' : 'Remove from Sale'}
-                    </button>
-                  </div>  
-                </div>
-              ))}
-            </div>
-          )}
-
-          <h2>正在出售的NFT</h2>
-          {nftsForSale.length === 0 ? (
-            <p>无NFT出售中</p>
-          ) : (
-            <ul>
-              {nftsForSale.map(({ tokenId, price }) => (
-                <li key={tokenId.toString()}>
-                  Token ID: {tokenId.toString()}, Price: {price.toString()} ETH
-                  <button onClick={() => buyNFT(tokenId, price)} disabled={loading}>
-                    {loading ? 'Purchasing...' : 'Buy NFT'}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+          <div>
+            <h2>导入普通积分合约</h2>
+            <input
+              type="text"
+              placeholder="contract address"
+              value={regularPointsAddress}
+              onChange={(e) => setRegularPointsAddress(e.target.value)}
+            />
+            <button onClick={handleLoadContract}>导入合约</button>
+          </div>
+  
+          <div>
+            <h2>普通积分发行</h2>
+            <input
+              type="number"
+              value={amountToMint}
+              onChange={(e) => setAmountToMint(e.target.value)}
+              placeholder="amount"
+            />
+            <button onClick={issueRegularPoints}>发行积分</button>
+          </div>
+  
+          <div>
+            <h2>积分余额</h2>
+            <p>通用积分余额: {universalPointsBalance} UPT</p>
+            <p>普通积分余额: {userPointsBalance} {symbol || 'RLP'}</p>
+            <button onClick={getPointsBalance}>更新余额</button>
+          </div>
+  
+          <div>
+            <h2>积分兑换（普通积分兑换成通用积分）</h2>
+            <p>Exchange Rate: 1 {symbol || 'RLP'} = {exchangeRate} UPT</p>
+            <button onClick={exchangePoints}>兑换</button>
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-export default App;
+export default App; // 注意：export 默认导出放在文件最后
